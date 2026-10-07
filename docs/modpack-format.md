@@ -96,12 +96,13 @@ downloading the full pack.
 }
 ```
 
-**The `mods` array is the only thing used for update decisions.** The
-installer compares the installed manifest against the hosted one and
-computes added / removed / version-changed mods (see `ComparePackMods` in
-`internal/kumi/packformat.go`). Entries are keyed by `id` — the authoritative
-mod id read from the loader metadata inside each jar — falling back to `name`
-for packs built before ids were emitted.
+The `mods` array supplies mod-level change summaries: added, removed and
+version-changed mods (see `ComparePackMods` in `internal/kumi/packformat.go`).
+Entries are keyed by `id` — the authoritative mod id read from the loader
+metadata inside each jar — falling back to `name` for older packs.
+File removal during installation uses `overrides.files`, while extraction
+replaces the files carried by the archive. Mod-level summaries and file-level
+installation ownership are separate.
 
 ### Mod identity + source (how the fields are filled)
 
@@ -120,9 +121,9 @@ fallback when no metadata is readable.
 
 `sha1` keys a bulk Modrinth lookup (`POST /v2/version_files`): mods found on
 Modrinth get a `source` block (`provider`, `projectId`, `versionId`, direct
-`url`), which makes packs traceable to their upstream projects and lets a
-future update path re-fetch a mod from Modrinth instead of shipping the
-bytes. CurseForge has an equivalent (`POST /v1/fingerprints`, murmur2) but
+`url`). Supported launchers can register these mods with their repositories
+instead of copying the bundled jars; deployment may then need network access.
+CurseForge has an equivalent (`POST /v1/fingerprints`, murmur2) but
 requires a partner `x-api-key` — planned once a key is provisioned. Mods
 without a match (private/renamed jars) simply have no `source`.
 
@@ -201,38 +202,59 @@ captured from a real install on the reference machine
 | GDLauncher Carbon | `instance.json` |
 | XMCL | `instance.json` (runtime block) |
 | Dawn | `profile.json` (schemaVersion 3) + `content-index.json` |
-| Polymerium | `profile.json` (Trident purl-style loader id) |
+| Polymerium | `profile.json` (loader `identity:version`, e.g. `net.fabricmc:0.16.14`) |
 | ATLauncher / Technic / QWERTZ / BakaXL / SKLauncher / HMCL | no generator (embedded-manifest format, uncaptured schema, or unsupported) — overrides still extract; the log says to add the instance manually |
 
-Generation never fails a verified install: every writer degrades to a log
+The generic generation path degrades writer failures to a log
 note (missing launcher state, unreachable meta API, ...) so worst case the
 files are in place and the user adds the instance in the launcher UI.
 
 ## Update flow
 
-1. App fetches the hosted `<id>-<latest>.manifest.json` (URL comes from the
-   remote content manifest / pack-access endpoint).
-2. Diffs the latest `overrides.files` against the locally installed manifest
-   copy (`.polyforge-pack.json`) **by path + sha256**:
-   - unchanged (same path + hash) → left on disk, never re-downloaded,
-   - changed / added → fetched and written,
-   - removed → deleted.
-   User files (not listed in the manifest) are never touched.
-3. Every fetched file is hash-verified against the manifest before it is
-   swapped into place — the same integrity guarantee as a fresh install.
+Hosted installs download the whole `.polypack`; local installs use the selected
+archive. For file-based installs, a previous `.polyforge-pack.json` record selects
+an update. Update and repair remove paths listed in the old pack but absent from
+the new one, then extract the shipped files and verify their checksums.
+Files outside the pack's ownership remain, except for an explicitly requested
+clean install. The current implementation re-extracts unchanged shipped files
+too; per-file downloads and hash-based skipping are future work.
+
+For Polymerium, select the existing instance to replace its local modpack.
+The replacement need not have the same pack ID. Package entries are merged by
+repository and project, ignoring the version when matching: retained projects
+keep their enabled state, tags and other entry settings while their references
+are updated. New projects are added; retired projects are removed on update
+or retained on an explicit merge install. Other package groups, instance settings
+and persistent user data are preserved. Clean retains the previous import sources,
+replaced ordinary runtime files, projection manifest, profile and PolyForge install record under
+`.polyforge-quarantine/<timestamp>/`.
+
+PolyForge maintains `.polyforge-pack.json` in the Polymerium instance root and
+registers the instance in its usual `installed-packs.json`. The local record adds
+a `launcher` field for adapter dispatch; the archive's manifest format is unchanged.
+It retains the complete mod list for PolyForge's update previews and remote
+removal, while its file verification list covers the files installed in `import/`.
+Converted repository packages are verified by Trident. This record is outside
+the import and runtime layers, and Trident does not use it to recognize updates.
+
+PolyForge's remote removal uses the registered adapter to remove recorded import
+mods and their ordinary runtime copies, or exact package entries belonging to
+the recorded local modpack. Other source groups and persistent data remain.
+Trident reconciles package projections on the next deployment; PolyForge does
+not delete shared repository caches.
 
 ### Delta updates (bandwidth)
 
-Because step 2 already knows exactly which files changed, an update only needs
-to *transfer* the changed ones. Two hosting models:
+The per-file manifest could support transferring only changed files. Two hosting
+models:
 
 - **File-level (recommended):** host each shipped file content-addressed by its
   hash (`/packs/<id>/objects/<sha256>`). The client fetches only the objects it
   doesn't already have; unchanged files (and files shared across versions or
   packs) are free. Verification is automatic — the object *is* its hash.
-- **Whole-pack (today):** host the full `<id>-<version>.polypack`. The diff
-  still avoids rewriting unchanged files on disk, but the whole pack is
-  downloaded. Simplest to host; no per-object endpoint.
+- **Whole-pack (today):** host the full `<id>-<version>.polypack`. The whole pack
+  is downloaded and its shipped files are re-extracted. No per-object endpoint
+  is required.
 
 Byte-level binary diffs (bsdiff/xdelta) are intentionally **not** used: pack
 payloads are mostly jars that change wholesale between versions, so file-level

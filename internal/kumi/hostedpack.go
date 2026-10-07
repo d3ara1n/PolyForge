@@ -80,6 +80,19 @@ func (s *Service) extractAndVerifyPack(result *ActionResult, packPath, chosenPat
 		return false
 	}
 	launchersFile := readZipLaunchersFile(reader)
+	if launcherID == "polymerium" {
+		instance, notes, err := installTridentPack(packPath, chosenPath, packManifest, launchersFile, mode)
+		for _, note := range notes {
+			s.logStep(result, "info", note)
+		}
+		if err != nil {
+			s.logStep(result, "error", err.Error())
+			return false
+		}
+		recordInstalledPack(packManifest.ID, packManifest.Name, packManifest.Version, instance)
+		s.emitProgress(100, "Done")
+		return true
+	}
 	instanceName := instanceNameFor(launcherID, packManifest, launchersFile)
 	instanceDir, target := PlanInstallDirs(launcherID, chosenPath, instanceName)
 	if target != filepath.Clean(chosenPath) {
