@@ -73,11 +73,15 @@ func tridentTestInstall(t *testing.T, root string, files map[string]string, mode
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance, _, err := installTridentPack(pack, root, manifest, nil, mode)
+	plan, err := planPackInstall("polymerium", root, manifest, nil, mode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return instance
+	_, err = installTridentPack(pack, plan, manifest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan.InstanceDir
 }
 
 // Filesystem assertions check the adapter's ownership boundary. Actual Trident
@@ -110,11 +114,11 @@ func TestTridentPackUpdateLiveOwnership(t *testing.T) {
 	if err := writeJSONFile(filepath.Join(instance, "profile.json"), profile); err != nil {
 		t.Fatal(err)
 	}
-	// A different pack ID/name is allowed when selecting an existing instance.
+	// The same pack can change its display name without changing identity.
 	got := tridentTestInstall(t, instance, map[string]string{
 		"config/settings.txt": "v2", "mods/new.jar": "managed", "mods/unknown.jar": "bundled", "options.txt": "pack settings",
 	}, ModeAuto, func(m *PackManifest) {
-		m.ID, m.Name, m.Version = "replacement-pack", "Other: Pack", "2.0"
+		m.Name, m.Version = "Other: Pack", "2.0"
 		m.Mods = []PackMod{
 			{File: "new.jar", Source: &PackModSource{Provider: "modrinth", ProjectID: "managed", VersionID: "v2"}},
 			{File: "unknown.jar", Source: &PackModSource{Provider: "modrinth", ProjectID: "unknown"}},
@@ -212,7 +216,11 @@ func TestTridentRejectsUnsafeProjectionBeforeUpdate(t *testing.T) {
 	pack := buildTestPack(t, map[string]string{"config/a.txt": "replacement"}, true)
 	reader, _ := openPackReader(pack)
 	manifest, _ := readZipPackManifest(reader)
-	if _, _, err := installTridentPack(pack, root, manifest, nil, ModeAuto); err == nil {
+	plan, err := planPackInstall("polymerium", root, manifest, nil, ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installTridentPack(pack, plan, manifest, nil); err == nil {
 		t.Fatal("accepted traversal in projection manifest")
 	}
 	if data, err := os.ReadFile(filepath.Join(instance, "import", "config", "a.txt")); err != nil || string(data) != "original" {

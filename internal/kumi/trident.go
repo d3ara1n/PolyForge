@@ -12,26 +12,29 @@ import (
 
 const tridentImportManifest = "trident.import.json"
 
-// installTridentPack writes Trident's profile and import sources alongside
-// PolyForge's own install record. The native profile controls deployment;
-// runtime projection manifests only identify working copies to invalidate.
-func installTridentPack(packPath, chosen string, manifest *PackManifest, launchers *LaunchersFile, requested InstallMode) (string, []string, error) {
+// tridentInstanceKey formats the native key; PolyForge selects the destination.
+func tridentInstanceKey(manifest *PackManifest, launchers *LaunchersFile) string {
 	name := manifest.ID
 	if launchers != nil {
 		if value, ok := launchers.Launchers["polymerium"]["instanceName"].(string); ok && value != "" {
 			name = value
 		}
 	}
-	if sanitizeInstanceName(name) == "" {
-		return "", nil, fmt.Errorf("instance name is empty after sanitizing")
-	}
-	instance, _ := PlanInstallDirs("polymerium", chosen, strings.ToLower(name))
-	if _, err := os.Stat(filepath.Join(chosen, "profile.json")); err == nil {
-		instance = filepath.Clean(chosen)
-	}
-	instance, err := filepath.Abs(instance)
-	if err != nil {
-		return "", nil, err
+	return strings.ToLower(sanitizeInstanceName(name))
+}
+
+// installTridentPack executes PolyForge's prepared plan. Native validation
+// happens here, before any installation files are changed.
+func installTridentPack(packPath string, plan packInstallPlan, manifest *PackManifest, launchers *LaunchersFile) ([]string, error) {
+	instance, mode := plan.InstanceDir, plan.Mode
+	if plan.Previous != nil {
+		profilePath, err := tridentRegularPath(instance, "profile.json")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(profilePath); err != nil {
+			return nil, fmt.Errorf("managed instance has no readable profile.json: %w", err)
+		}
 	}
 	var info map[string]any
 	var defaults PackLauncherDefaults
@@ -40,33 +43,22 @@ func installTridentPack(packPath, chosen string, manifest *PackManifest, launche
 	}
 	profile, err := tridentProfile(instance, manifest, info, defaults)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	_, profileErr := os.Stat(filepath.Join(instance, "profile.json"))
-	mode := requested
-	if profileErr != nil && !os.IsNotExist(profileErr) {
-		return "", nil, profileErr
-	}
-	if os.IsNotExist(profileErr) {
-		mode = ModeInstall
-	} else if mode == ModeAuto {
-		mode = ModeUpdate
-	}
-
 	reader, err := openPackReader(packPath)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	for _, file := range manifest.Overrides.Files {
 		if err := validateTridentPath(file.Path); err != nil {
-			return "", nil, err
+			return nil, err
 		}
 	}
 	incoming := make(map[string]bool)
 	for _, entry := range reader.File {
 		if relative, ok := strings.CutPrefix(entry.Name, "overrides/"); ok && relative != "" {
 			if err := validateTridentPath(strings.TrimSuffix(relative, "/")); err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			if !entry.FileInfo().IsDir() {
 				incoming[tridentPathKey(relative)] = true
@@ -74,11 +66,11 @@ func installTridentPack(packPath, chosen string, manifest *PackManifest, launche
 		}
 	}
 	if err := os.MkdirAll(instance, 0o755); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	work, err := os.MkdirTemp(instance, ".polyforge-install-")
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	retainWork := false
 	defer func() {
@@ -88,31 +80,31 @@ func installTridentPack(packPath, chosen string, manifest *PackManifest, launche
 	}()
 	stage := filepath.Join(work, "import")
 	if err := os.Mkdir(stage, 0o755); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	count, err := extractPackOverrides(reader, stage)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if report := verifyFilesOnDisk(stage, manifest.Overrides.Files); !report.OK() {
-		return "", nil, fmt.Errorf("pack integrity check failed: %v", report.Issues)
+		return nil, fmt.Errorf("pack integrity check failed: %v", report.Issues)
 	}
 	entries, err := tridentPackEntries(stage, manifest)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if err := updateTridentPackages(profile, manifest, entries, mode); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	imports := filepath.Join(instance, "import")
 	previous, err := tridentSourceFiles(imports)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	owned, err := tridentImportOwnership(instance, previous)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if mode == ModeInstall {
 		// Explicit install merges files. Keep originals not supplied by this
@@ -120,7 +112,7 @@ func installTridentPack(packPath, chosen string, manifest *PackManifest, launche
 		for _, relative := range previous {
 			if !incoming[tridentPathKey(relative)] {
 				if err := copyTridentFile(filepath.Join(imports, filepath.FromSlash(relative)), filepath.Join(stage, filepath.FromSlash(relative))); err != nil {
-					return "", nil, err
+					return nil, err
 				}
 			}
 		}
@@ -131,12 +123,12 @@ func installTridentPack(packPath, chosen string, manifest *PackManifest, launche
 		}
 	}
 	if err := writeJSONFile(filepath.Join(work, installedManifestName), tridentInstallRecord(manifest, entries)); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	backup, keep, err := commitTridentInstall(instance, work, profile, mode, owned)
 	retainWork = keep
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	notes := []string{
 		fmt.Sprintf("Installed %s v%s into Polymerium: %s (mode: %s).", manifest.Name, manifest.Version, instance, mode),
@@ -146,7 +138,7 @@ func installTridentPack(packPath, chosen string, manifest *PackManifest, launche
 	if backup != "" {
 		notes = append(notes, "Previous pack files saved to "+backup)
 	}
-	return instance, notes, nil
+	return notes, nil
 }
 
 func tridentProfile(instance string, m *PackManifest, info map[string]any, defaults PackLauncherDefaults) (map[string]any, error) {

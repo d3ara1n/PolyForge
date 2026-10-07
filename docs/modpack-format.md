@@ -219,8 +219,17 @@ Files outside the pack's ownership remain, except for an explicitly requested
 clean install. The current implementation re-extracts unchanged shipped files
 too; per-file downloads and hash-based skipping are future work.
 
-For Polymerium, select the existing instance to replace its local modpack.
-The replacement need not have the same pack ID. Package entries are merged by
+For Polymerium, PolyForge selects an existing managed instance using its install record and pack
+ID, then resolves the installation mode with its normal mode resolver. Instance
+planning does not read or validate launcher-native profiles. An occupied
+directory without a matching install record is preserved; a new
+instance uses a sanitized, lower-case key with underscores appended to avoid
+collisions.
+
+When executing an install or update, the Polymerium adapter validates the native
+profile. Missing or invalid local modpack sources in a managed instance cause a
+runtime installation error; they are not migrated or bypassed by allocating a
+new instance. Package entries are merged by
 repository and project, ignoring the version when matching: retained projects
 keep their enabled state, tags and other entry settings while their references
 are updated. New projects are added; retired projects are removed on update
@@ -242,6 +251,12 @@ mods and their ordinary runtime copies, or exact package entries belonging to
 the recorded local modpack. Other source groups and persistent data remain.
 Trident reconciles package projections on the next deployment; PolyForge does
 not delete shared repository caches.
+
+The launcher registry supplies the key format, content/record layout and native
+execution callback. PolyForge owns plan selection, mode resolution, successful
+install registration and completion. File-based launchers retain their existing
+extraction, stale-file cleanup and profile-generation flow. The native callback
+adapts that execution to Trident's import sources, package entries and projections.
 
 ### Delta updates (bandwidth)
 

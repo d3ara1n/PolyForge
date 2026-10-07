@@ -454,6 +454,15 @@ type LauncherTarget struct {
 	// InstanceSubdir is where overrides/ land relative to the launcher's
 	// instance root, e.g. "minecraft" or ".minecraft" or "" (root).
 	InstanceSubdir string
+	// RecordAtInstanceRoot opts into PolyForge's metadata-based instance
+	// selection. Content can live below the instance while records stay at root.
+	RecordAtInstanceRoot bool
+	// InstanceKey formats a preferred instance key from pack metadata only.
+	// nil retains instanceNameFor's existing behavior.
+	InstanceKey func(m *PackManifest, l *LaunchersFile) string
+	// Install applies a prepared PolyForge plan to a native launcher layout.
+	// nil retains the file-based extraction/generation pipeline.
+	Install func(packPath string, plan packInstallPlan, m *PackManifest, l *LaunchersFile) ([]string, error)
 	// Generate writes the launcher-specific files (profile/instance configs)
 	// from the pack manifest + info fields into instanceDir, returning
 	// human-readable notes for the install log. nil = not implemented
@@ -505,8 +514,12 @@ var launcherTargets = map[string]LauncherTarget{
 	"hmcl":           {ID: "hmcl", InstanceSubdir: ""},
 	// Polymerium is Trident's desktop shell. Pack files are import sources;
 	// Trident projects them into build/ (the live layer) during deployment.
-	"polymerium": {ID: "polymerium", InstanceSubdir: "import", Generate: genPolymeriumProfile, RemoveMod: removeTridentPackMod},
-	"xmcl":       {ID: "xmcl", InstanceSubdir: "", Generate: genXMCLInstance}, // instance root is the game dir (.minecraftx\instances\<name>)
+	"polymerium": {
+		ID: "polymerium", InstanceSubdir: "import", RecordAtInstanceRoot: true,
+		InstanceKey: tridentInstanceKey, Install: installTridentPack,
+		Generate: genPolymeriumProfile, RemoveMod: removeTridentPackMod,
+	},
+	"xmcl": {ID: "xmcl", InstanceSubdir: "", Generate: genXMCLInstance}, // instance root is the game dir (.minecraftx\instances\<name>)
 }
 
 // InstanceSubdirFor returns where a launcher expects the pack's overrides,

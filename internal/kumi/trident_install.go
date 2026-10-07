@@ -64,7 +64,7 @@ func commitTridentInstall(instance, work string, profile map[string]any, mode In
 	}
 	oldRecord := filepath.Join(work, "previous-polyforge-pack.json")
 	stagedRecord := filepath.Join(work, installedManifestName)
-	if mode == ModeClean {
+	if mode == ModeClean && (oldExists || oldRecordExists || len(live) > 0) {
 		if _, err := tridentRegularPath(instance, quarantineDirName); err != nil {
 			return "", false, err
 		}
